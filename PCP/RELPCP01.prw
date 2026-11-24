@@ -249,16 +249,10 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
 
     (cAliasSC2)->(DbCloseArea())
 
-    // Libera recursos gráficos
-    oBrushGray:Destroy()
-    oFonts["TITLE_MAIN"]:Destroy()
-    oFonts["SUBTITLE"]:Destroy()
-    oFonts["SUB_UNDER"]:Destroy()
-    oFonts["LABEL_BOLD"]:Destroy()
-    oFonts["DATA_REG"]:Destroy()
-    oFonts["SMALL_BOLD"]:Destroy()
-    oFonts["SMALL_REG"]:Destroy()
-    oFonts["FOOTER_CR"]:Destroy()
+    // Classes binárias TBrush e TFont não possuem método Destroy() — libera referências com Nil
+    oBrushGray := Nil
+    oFonts     := Nil
+    oPrinter   := Nil
 Return
 
 /*/{Protheus.doc} PrtTopBlocks
