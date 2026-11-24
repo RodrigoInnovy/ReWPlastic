@@ -115,22 +115,25 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     Local cLogo      := "\system\lgrl01.bmp"
     Local cDataDe    := DtoS(dDataDe)
     Local cDataAte   := DtoS(dDataAte)
+    Local cLoteField := "%' ' AS C2_XLOTE%"
     Local lAdjustLeg := .F.
-    Local lDisabSet  := .F.
+    Local lDisabSet  := .T.
     Local nPag       := 0
     Local nRow       := 0
     Local oPrinter   := Nil
     Local oFonts     := JsonObject():New()
     Local oBrushGray := Nil
 
-    // 1. Inicializa o objeto FWMSPrinter
+    // 1. Inicializa o objeto FWMSPrinter com lDisabSet := .T. para NÃO abrir a tela de Setup 2 vezes
+    // (o Setup será chamado apenas uma vez explicitamente após configurar retrato e papel A4)
     oPrinter := FWMSPrinter():New(cFileName, IMP_PDF, lAdjustLeg, "", lDisabSet, , , , , , .F., .T.)
     oPrinter:SetResolution(72)
     oPrinter:SetPortrait()
     oPrinter:SetPaperSize(DMPAPER_A4)
     oPrinter:SetMargin(10, 10, 10, 10)
+    oPrinter:cPathPDF := GetTempPath()
 
-    // Abre tela de Setup do FWMSPrinter
+    // Abre a tela de Setup apenas 1 única vez
     oPrinter:Setup()
     If oPrinter:nModalResult != PD_OK
         Return
@@ -147,6 +150,13 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     oFonts["FOOTER_CR"]  := TFont():New("Arial", , 08, , .T.)
 
     oBrushGray := TBrush():New(, RGB(225, 225, 225))
+
+    // Verifica dinamicamente se existe campo de lote na SC2 (ex: C2_XLOTE ou C2_LOTECTL) para evitar ORA-00904
+    If SC2->(FieldPos("C2_XLOTE")) > 0
+        cLoteField := "%SC2.C2_XLOTE AS C2_XLOTE%"
+    ElseIf SC2->(FieldPos("C2_LOTECTL")) > 0
+        cLoteField := "%SC2.C2_LOTECTL AS C2_XLOTE%"
+    EndIf
 
     // 3. Consulta principal na SC2 com JOIN em SB1, SC5, SA1 e SA7 utilizando BeginSql (100% compatível com Oracle/MSSQL/Postgres)
     // Campos customizados da SB1 incluídos: B1_XCAVID, B1_XCICLO, B1_XMOLDE, B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL
@@ -167,8 +177,8 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
             SC2.C2_DATPRF,
             SC2.C2_PEDIDO,
             SC2.C2_ITEMPV,
-            SC2.C2_LOTECTL,
             SC2.C2_ROTEIRO,
+            %Exp:cLoteField%,
             SB1.B1_DESC,
             SB1.B1_QE,
             SB1.B1_PESO,
@@ -371,7 +381,7 @@ Static Function PrtBlk2Cli(oPrinter, oFonts, oBrushGray, cAliasSC2, nRow)
     Local cPrazo    := DtoC((cAliasSC2)->C2_DATPRF)
     Local cPedido   := AllTrim((cAliasSC2)->C2_PEDIDO)
     Local cItemPV   := AllTrim((cAliasSC2)->C2_ITEMPV)
-    Local cLote     := AllTrim((cAliasSC2)->C2_LOTECTL)
+    Local cLote     := AllTrim((cAliasSC2)->C2_XLOTE)
     Local cCodProd  := AllTrim((cAliasSC2)->C2_PRODUTO)
     Local cCodCli   := AllTrim((cAliasSC2)->A7_CODCLI)
     Local cDescProd := AllTrim((cAliasSC2)->B1_DESC)
