@@ -148,7 +148,7 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
 
     oBrushGray := TBrush():New(, RGB(225, 225, 225))
 
-    // 3. Consulta principal na SC2 com JOIN em SB1, SC5, SA1 e SA7 utilizando BeginSql
+    // 3. Consulta principal na SC2 com JOIN em SB1, SC5, SA1 e SA7 utilizando BeginSql (100% compatível com Oracle/MSSQL/Postgres)
     // Campos customizados da SB1 incluídos: B1_XCAVID, B1_XCICLO, B1_XMOLDE, B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL
     BeginSql Alias cAliasSC2
         Column C2_EMISSAO As Date
@@ -184,21 +184,21 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
             COALESCE(SA1.A1_NREDUZ,  ' ') AS A1_NREDUZ,
             COALESCE(SA1.A1_NOME,    ' ') AS A1_NOME,
             COALESCE(SA7.A7_CODCLI,  ' ') AS A7_CODCLI
-        FROM %table:SC2% SC2 WITH (%nolock%)
-        INNER JOIN %table:SB1% SB1 WITH (%nolock%)
+        FROM %table:SC2% SC2
+        INNER JOIN %table:SB1% SB1
             ON  SB1.B1_FILIAL  = %xFilial:SB1%
             AND SB1.B1_COD     = SC2.C2_PRODUTO
             AND SB1.%notDel%
-        LEFT JOIN %table:SC5% SC5 WITH (%nolock%)
+        LEFT JOIN %table:SC5% SC5
             ON  SC5.C5_FILIAL  = %xFilial:SC5%
             AND SC5.C5_NUM     = SC2.C2_PEDIDO
             AND SC5.%notDel%
-        LEFT JOIN %table:SA1% SA1 WITH (%nolock%)
+        LEFT JOIN %table:SA1% SA1
             ON  SA1.A1_FILIAL  = %xFilial:SA1%
             AND SA1.A1_COD     = SC5.C5_CLIENTE
             AND SA1.A1_LOJA    = SC5.C5_LOJACLI
             AND SA1.%notDel%
-        LEFT JOIN %table:SA7% SA7 WITH (%nolock%)
+        LEFT JOIN %table:SA7% SA7
             ON  SA7.A7_FILIAL  = %xFilial:SA7%
             AND SA7.A7_CLIENTE = SC5.C5_CLIENTE
             AND SA7.A7_LOJA    = SC5.C5_LOJACLI
@@ -674,8 +674,8 @@ Static Function PrtBlk6SD4(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, nPag,
             SD4.D4_LOTECTL,
             SB1.B1_DESC,
             SB1.B1_UM
-        FROM %table:SD4% SD4 WITH (%nolock%)
-        INNER JOIN %table:SB1% SB1 WITH (%nolock%)
+        FROM %table:SD4% SD4
+        INNER JOIN %table:SB1% SB1
             ON  SB1.B1_FILIAL = %xFilial:SB1%
             AND SB1.B1_COD    = SD4.D4_COD
             AND SB1.%notDel%
@@ -829,7 +829,7 @@ Static Function PrtBlk7SG2(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, nPag,
         SELECT
             SG2.G2_OPERAC,
             SG2.G2_DESCRI
-        FROM %table:SG2% SG2 WITH (%nolock%)
+        FROM %table:SG2% SG2
         WHERE SG2.G2_FILIAL  = %xFilial:SG2%
           AND SG2.G2_PRODUTO = %Exp:cProduto%
           AND SG2.G2_CODIGO  = %Exp:cRoteiro%
@@ -983,8 +983,8 @@ Static Function GetFirstSG2(cAliasSC2)
             SG2.G2_TEMPAD,
             SG2.G2_LOTEPAD,
             COALESCE(SH1.H1_DESCRI, ' ') AS H1_DESCRI
-        FROM %table:SG2% SG2 WITH (%nolock%)
-        LEFT JOIN %table:SH1% SH1 WITH (%nolock%)
+        FROM %table:SG2% SG2
+        LEFT JOIN %table:SH1% SH1
             ON  SH1.H1_FILIAL = %xFilial:SH1%
             AND SH1.H1_CODIGO = SG2.G2_RECURSO
             AND SH1.%notDel%
