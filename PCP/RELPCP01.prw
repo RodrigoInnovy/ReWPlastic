@@ -117,7 +117,6 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     Local cDataAte   := DtoS(dDataAte)
     Local lAdjustLeg := .F.
     Local lDisabSet  := .F.
-    Local nFlags     := PD_ISTOTVSPRINTER + PD_DISABLEORIENTATION
     Local nPag       := 0
     Local nRow       := 0
     Local oPrinter   := Nil
@@ -150,12 +149,7 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     oBrushGray := TBrush():New(, RGB(225, 225, 225))
 
     // 3. Consulta principal na SC2 com JOIN em SB1, SC5, SA1 e SA7 utilizando BeginSql
-    // =========================================================================================
-    // NOTA DE CUSTOMIZAÇÃO (CAMPOS _X NA SB1 OU SC2):
-    // Caso os campos customizados de Molde/Injeção estejam na SB1 ou SC2 (ex: B1_XCAVID,
-    // B1_XCICLO, B1_XMOLDE, B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL), adicione-os na cláusula SELECT
-    // abaixo e referencie-os em PrtBlk3() e PrtBlk4().
-    // =========================================================================================
+    // Campos customizados da SB1 incluídos: B1_XCAVID, B1_XCICLO, B1_XMOLDE, B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL
     BeginSql Alias cAliasSC2
         Column C2_EMISSAO As Date
         Column C2_DATPRF  As Date
@@ -179,6 +173,12 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
             SB1.B1_QE,
             SB1.B1_PESO,
             SB1.B1_PESBRU,
+            SB1.B1_XCAVID,
+            SB1.B1_XCICLO,
+            SB1.B1_XMOLDE,
+            SB1.B1_XALTMOL,
+            SB1.B1_XLARMOL,
+            SB1.B1_XCOMMOL,
             COALESCE(SC5.C5_CLIENTE, ' ') AS C5_CLIENTE,
             COALESCE(SC5.C5_LOJACLI, ' ') AS C5_LOJACLI,
             COALESCE(SA1.A1_NREDUZ,  ' ') AS A1_NREDUZ,
@@ -389,8 +389,6 @@ Static Function PrtBlk2Cli(oPrinter, oFonts, oBrushGray, cAliasSC2, nRow)
         cCliente := "PRODUÇÃO PARA ESTOQUE / SEM PEDIDO VINCULADO"
     EndIf
 
-    // NOTA DE CUSTOMIZAÇÃO: Caso utilize um campo customizado para o Lote (ex: SC2->C2_XLOTE),
-    // substitua a variável cLote abaixo.
     If Empty(cLote)
         cLote := "______________"
     EndIf
@@ -447,7 +445,7 @@ Static Function PrtBlk2Cli(oPrinter, oFonts, oBrushGray, cAliasSC2, nRow)
 Return (nBoxTop + nBoxH + 6)
 
 /*/{Protheus.doc} PrtBlk3Inj
-Imprime o BLOCO 3: Parâmetros Técnicos de Injeção / Molde.
+Imprime o BLOCO 3: Parâmetros Técnicos de Injeção / Molde utilizando B1_XCAVID e B1_XCICLO.
 @type static function
 @author Arquiteto Protheus
 @since 23/11/2026
@@ -465,14 +463,8 @@ Static Function PrtBlk3Inj(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
     Local nQtdEmb     := (cAliasSC2)->B1_QE
     Local nPesoLiq    := (cAliasSC2)->B1_PESO
     Local nPesoBru    := (cAliasSC2)->B1_PESBRU
-    // =========================================================================================
-    // NOTA DE CUSTOMIZAÇÃO — CAMPOS TÉCNICOS DE INJEÇÃO / MOLDE (BLOCO 3):
-    // Substitua as atribuições abaixo pelos campos customizados (_X) da sua tabela SB1, SG2 ou SH4:
-    //   - nCavidades : Ex: (cAliasSC2)->B1_XCAVID  ou SG2->G2_XCAVID
-    //   - nCicloSeg  : Ex: (cAliasSC2)->B1_XCICLO  ou SG2->G2_XCICLO (Ciclo em segundos)
-    // =========================================================================================
-    Local nCavidades  := 0
-    Local nCicloSeg   := 0
+    Local nCavidades  := (cAliasSC2)->B1_XCAVID
+    Local nCicloSeg   := (cAliasSC2)->B1_XCICLO
     Local nPecasHora  := 0
     Local nTempoTotal := 0
     Local nVolFechado := 0
@@ -484,12 +476,18 @@ Static Function PrtBlk3Inj(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
     Local cVolTxt     := "0"
     Local cResidTxt   := "0"
 
-    // Cálculos automáticos caso os campos customizados de Cavidades e Ciclo estejam preenchidos
+    If nCavidades > 0
+        cCavTxt := AllTrim(Transform(nCavidades, "@E 9,999"))
+    EndIf
+
+    If nCicloSeg > 0
+        cCicloTxt := AllTrim(Transform(nCicloSeg, "@E 999.99")) + " s"
+    EndIf
+
+    // Cálculos automáticos de Peças/h e Tempo Total quando Cavidades e Ciclo estão preenchidos
     If nCavidades > 0 .And. nCicloSeg > 0
-        nPecasHora  := Round((3600 / nCicloSeg) * nCavidades, 2)
-        cCavTxt     := cValToChar(nCavidades)
-        cCicloTxt   := AllTrim(Transform(nCicloSeg, "@E 999,999.99")) + " s"
-        cPecasHTxt  := AllTrim(Transform(nPecasHora, "@E 999,999.99"))
+        nPecasHora := Round((3600 / nCicloSeg) * nCavidades, 2)
+        cPecasHTxt := AllTrim(Transform(nPecasHora, "@E 999,999.99"))
         If nPecasHora > 0
             nTempoTotal := Round(nQuantOP / nPecasHora, 2)
             cTempoTxt   := AllTrim(Transform(nTempoTotal, "@E 999,999.99")) + " h"
@@ -536,7 +534,7 @@ Static Function PrtBlk3Inj(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
 Return (nBoxTop + nBoxH + 6)
 
 /*/{Protheus.doc} PrtBlk4Mol
-Imprime o BLOCO 4: Produção e Dimensões do Molde.
+Imprime o BLOCO 4: Produção e Dimensões do Molde utilizando B1_XMOLDE, B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL e B1_XCICLO.
 @type static function
 @author Arquiteto Protheus
 @since 23/11/2026
@@ -550,34 +548,43 @@ Imprime o BLOCO 4: Produção e Dimensões do Molde.
 Static Function PrtBlk4Mol(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
     Local nBoxTop    := nRow
     Local nBoxH      := 54
-    Local cMolde     := aDadosSG2[3]
+    Local cMolde     := AllTrim((cAliasSC2)->B1_XMOLDE)
     Local cMaquina   := ""
-    // =========================================================================================
-    // NOTA DE CUSTOMIZAÇÃO — DIMENSÕES DO MOLDE E CICLO ESTIMADO (BLOCO 4):
-    // Substitua as variáveis abaixo pelos campos customizados (_X) do cadastro de Ferramentas (SH4),
-    // Produto (SB1) ou Operações (SG2):
-    //   - cMolde     : Padrão utiliza SG2->G2_FERRAM. Pode ser alterado para SB1->B1_XMOLDE
-    //   - cAltMolde  : Ex: cValToChar(SB1->B1_XALTMOL)
-    //   - cLarMolde  : Ex: cValToChar(SB1->B1_XLARMOL)
-    //   - cComMolde  : Ex: cValToChar(SB1->B1_XCOMMOL)
-    //   - cCicloEst  : Ex: cValToChar(SG2->G2_XCICLO) + " s"
-    // =========================================================================================
     Local cAltMolde  := "______"
     Local cLarMolde  := "______"
     Local cComMolde  := "______"
     Local cCicloEst  := "______"
 
+    // Se B1_XMOLDE estiver em branco, faz fallback para a ferramenta do roteiro (SG2->G2_FERRAM)
+    If Empty(cMolde)
+        cMolde := aDadosSG2[3]
+    EndIf
     If Empty(cMolde)
         cMolde := "________________"
     EndIf
 
+    // Dimensões do Molde na SB1 (B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL)
+    If (cAliasSC2)->B1_XALTMOL > 0
+        cAltMolde := AllTrim(Transform((cAliasSC2)->B1_XALTMOL, "@E 9,999.99"))
+    EndIf
+    If (cAliasSC2)->B1_XLARMOL > 0
+        cLarMolde := AllTrim(Transform((cAliasSC2)->B1_XLARMOL, "@E 9,999.99"))
+    EndIf
+    If (cAliasSC2)->B1_XCOMMOL > 0
+        cComMolde := AllTrim(Transform((cAliasSC2)->B1_XCOMMOL, "@E 9,999.99"))
+    EndIf
+
+    // Máquina sugerida (SG2->G2_RECURSO + SH1->H1_DESCRI)
     If !Empty(aDadosSG2[1])
         cMaquina := AllTrim(aDadosSG2[1]) + " - " + AllTrim(aDadosSG2[2])
     Else
         cMaquina := "____________________________"
     EndIf
 
-    If aDadosSG2[4] > 0
+    // Ciclo estimado: prioriza B1_XCICLO (em segundos), com fallback para G2_TEMPAD do roteiro
+    If (cAliasSC2)->B1_XCICLO > 0
+        cCicloEst := AllTrim(Transform((cAliasSC2)->B1_XCICLO, "@E 999.99")) + " s"
+    ElseIf aDadosSG2[4] > 0
         cCicloEst := AllTrim(Transform(aDadosSG2[4], "@E 999.99")) + " h (Padrão Roteiro)"
     EndIf
 
@@ -709,7 +716,6 @@ Static Function PrtBlk6SD4(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, nPag,
             EndIf
 
             // Calcula (%) de Uso proporcional ao peso/quantidade total empenhada
-            // NOTA: Caso exista campo customizado de percentual (ex: SD4->D4_XPERC), substitua aqui
             If nTotQtde > 0
                 nPercUso := Round((aItensSD4[nIdx][4] / nTotQtde) * 100, 2)
             Else
