@@ -55,7 +55,9 @@ User Function RELPCP01(lFromM650)
     EndIf
 
     If lContinua
-        FwMsgRun(, {|| ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte) }, "Aguarde", "Gerando relatório gráfico da Ordem de Produção...")
+        // Importante: NÃO envolver FWMSPrinter:Preview() dentro de FwMsgRun(), pois o fechamento
+        // do diálogo modal concorrente do FwMsgRun derruba o SmartClient após fechar o PDF.
+        ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     EndIf
 
     RestArea(aAreaSC2)
@@ -111,8 +113,9 @@ Configura o objeto FWMSPrinter, executa a query principal (SC2) via BeginSql e c
 /*/
 Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     Local cAliasSC2  := GetNextAlias()
-    Local cFileName  := "OP_" + DtoS(Date()) + "_" + StrTran(Time(), ":", "")
-    Local cLogo      := "\system\lgrl01.bmp"
+    Local cFileName  := "OP_" + DtoS(Date()) + "_" + StrTran(Time(), ":", "") + ".rel"
+    Local cPathPDF   := GetTempPath()
+    Local cLogo      := ""
     Local cDataDe    := DtoS(dDataDe)
     Local cDataAte   := DtoS(dDataAte)
     Local cLoteField := "%' ' AS C2_XLOTE%"
@@ -124,33 +127,6 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     Local oFonts     := JsonObject():New()
     Local oBrushGray := Nil
 
-    // 1. Inicializa o objeto FWMSPrinter com lDisabSet := .T. para NÃO abrir a tela de Setup 2 vezes
-    // (o Setup será chamado apenas uma vez explicitamente após configurar retrato e papel A4)
-    oPrinter := FWMSPrinter():New(cFileName, IMP_PDF, lAdjustLeg, "", lDisabSet, , , , , , .F., .T.)
-    oPrinter:SetResolution(72)
-    oPrinter:SetPortrait()
-    oPrinter:SetPaperSize(DMPAPER_A4)
-    oPrinter:SetMargin(10, 10, 10, 10)
-    oPrinter:cPathPDF := GetTempPath()
-
-    // Abre a tela de Setup apenas 1 única vez
-    oPrinter:Setup()
-    If oPrinter:nModalResult != PD_OK
-        Return
-    EndIf
-
-    // 2. Cria fontes padronizadas e brush cinza claro para cabeçalhos de tabela
-    oFonts["TITLE_MAIN"] := TFont():New("Arial", , 14, , .T.)
-    oFonts["SUBTITLE"]   := TFont():New("Arial", , 10, , .T.)
-    oFonts["SUB_UNDER"]  := TFont():New("Arial", , 10, , .T., , .T.) // Negrito + Sublinhado
-    oFonts["LABEL_BOLD"] := TFont():New("Arial", , 08, , .T.)
-    oFonts["DATA_REG"]   := TFont():New("Arial", , 08, , .F.)
-    oFonts["SMALL_BOLD"] := TFont():New("Arial", , 07, , .T.)
-    oFonts["SMALL_REG"]  := TFont():New("Arial", , 07, , .F.)
-    oFonts["FOOTER_CR"]  := TFont():New("Arial", , 08, , .T.)
-
-    oBrushGray := TBrush():New(, RGB(225, 225, 225))
-
     // Verifica dinamicamente se existe campo de lote na SC2 (ex: C2_XLOTE ou C2_LOTECTL) para evitar ORA-00904
     If SC2->(FieldPos("C2_XLOTE")) > 0
         cLoteField := "%SC2.C2_XLOTE AS C2_XLOTE%"
@@ -158,7 +134,7 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
         cLoteField := "%SC2.C2_LOTECTL AS C2_XLOTE%"
     EndIf
 
-    // 3. Consulta principal na SC2 com JOIN em SB1, SC5, SA1 e SA7 utilizando BeginSql (100% compatível com Oracle/MSSQL/Postgres)
+    // 1. Consulta principal na SC2 com JOIN em SB1, SC5, SA1 e SA7 utilizando BeginSql (100% compatível com Oracle/MSSQL/Postgres)
     // Campos customizados da SB1 incluídos: B1_XCAVID, B1_XCICLO, B1_XMOLDE, B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL
     BeginSql Alias cAliasSC2
         Column C2_EMISSAO As Date
@@ -222,38 +198,141 @@ Static Function ProcRelOP(cOpDe, cOpAte, dDataDe, dDataAte)
     EndSql
 
     If (cAliasSC2)->(Eof())
+        (cAliasSC2)->(DbCloseArea())
         MsgInfo("Nenhuma Ordem de Produção encontrada para os parâmetros informados.", "Atenção - RELPCP01")
-    Else
-        While !(cAliasSC2)->(Eof())
-            nPag := 1
-            oPrinter:StartPage()
-
-            // Imprime os Blocos Fixos do Topo (Blocos 1 a 5)
-            nRow := PrtTopBlocks(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, nPag)
-
-            // Imprime o Bloco 6: Matéria-Prima / Insumo a Utilizar (SD4 x SB1)
-            nRow := PrtBlk6SD4(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, @nPag, nRow)
-
-            // Imprime o Bloco 7: Roteiro Produtivo (SG2)
-            nRow := PrtBlk7SG2(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, @nPag, nRow)
-
-            // Imprime o Bloco 8: Rodapé Fixo na Base da Página e encerra a página da OP
-            PrtBlk8Footer(oPrinter, oFonts, oBrushGray)
-            oPrinter:EndPage()
-
-            (cAliasSC2)->(DbSkip())
-        EndDo
-
-        oPrinter:Preview()
+        Return
     EndIf
+
+    // 2. Obtém o logotipo da empresa (procura no servidor e copia para o cliente via CpyS2T)
+    cLogo := GetLogoOP()
+
+    // 3. Inicializa o objeto FWMSPrinter direto para geração de PDF (sem conflito de Setup modal)
+    oPrinter := FWMSPrinter():New(cFileName, IMP_PDF, lAdjustLeg, cPathPDF, lDisabSet)
+    oPrinter:SetResolution(72)
+    oPrinter:SetPortrait()
+    oPrinter:SetPaperSize(DMPAPER_A4)
+    oPrinter:SetMargin(10, 10, 10, 10)
+    oPrinter:cPathPDF := cPathPDF
+    oPrinter:SetViewPDF(.T.)
+
+    // 4. Cria fontes padronizadas e brush cinza claro para cabeçalhos de tabela
+    oFonts["TITLE_MAIN"] := TFont():New("Arial", , -14, .T., .T.)
+    oFonts["SUBTITLE"]   := TFont():New("Arial", , -10, .T., .T.)
+    oFonts["SUB_UNDER"]  := TFont():New("Arial", , -10, .T., .T., , , , , .T.) // Negrito + Sublinhado
+    oFonts["LABEL_BOLD"] := TFont():New("Arial", , -08, .T., .T.)
+    oFonts["DATA_REG"]   := TFont():New("Arial", , -08, .T., .F.)
+    oFonts["SMALL_BOLD"] := TFont():New("Arial", , -07, .T., .T.)
+    oFonts["SMALL_REG"]  := TFont():New("Arial", , -07, .T., .F.)
+    oFonts["FOOTER_CR"]  := TFont():New("Arial", , -08, .T., .T.)
+
+    oBrushGray := TBrush():New(, RGB(225, 225, 225))
+
+    While !(cAliasSC2)->(Eof())
+        nPag := 1
+        oPrinter:StartPage()
+
+        // Imprime os Blocos Fixos do Topo (Blocos 1 a 5)
+        nRow := PrtTopBlocks(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, nPag)
+
+        // Imprime o Bloco 6: Matéria-Prima / Insumo a Utilizar (SD4 x SB1)
+        nRow := PrtBlk6SD4(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, @nPag, nRow)
+
+        // Imprime o Bloco 7: Roteiro Produtivo (SG2)
+        nRow := PrtBlk7SG2(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, @nPag, nRow)
+
+        // Imprime o Bloco 8: Rodapé Fixo na Base da Página e encerra a página da OP
+        PrtBlk8Footer(oPrinter, oFonts, oBrushGray)
+        oPrinter:EndPage()
+
+        (cAliasSC2)->(DbSkip())
+    EndDo
 
     (cAliasSC2)->(DbCloseArea())
 
-    // Classes binárias TBrush e TFont não possuem método Destroy() — libera referências com Nil
+    // Gera e exibe o PDF
+    oPrinter:Preview()
+
     oBrushGray := Nil
     oFonts     := Nil
     oPrinter   := Nil
 Return
+
+/*/{Protheus.doc} GetLogoOP
+Localiza o logotipo da empresa no StartPath (\system\) do servidor e copia para a pasta temporária
+local do cliente (GetTempPath) via CpyS2T, pois o FWMSPrinter (IMP_PDF) processa a imagem no cliente.
+@type static function
+@author Arquiteto Protheus
+@since 23/11/2026
+@return character, Caminho local do logotipo acessível pelo FWMSPrinter
+/*/
+Static Function GetLogoOP()
+    Local cGrpCompany := AllTrim(FWGrpCompany())
+    Local cCodEmpGrp  := AllTrim(FWCodEmp())
+    Local cUnitGrp    := AllTrim(FWUnitBusiness())
+    Local cFilGrp     := AllTrim(FWFilial())
+    Local cDescLogo   := ""
+    Local cStart      := GetSrvProfString("Startpath", "")
+    Local cTemp       := GetTempPath()
+    Local cFonte      := ""
+    Local cFileOnly   := ""
+    Local cLogoLocal  := ""
+    Local aLogos      := {}
+    Local nI          := 0
+
+    If !Empty(cStart) .And. !(Right(cStart, 1) $ "\/")
+        cStart += "\"
+    EndIf
+    If !Empty(cTemp) .And. !(Right(cTemp, 1) $ "\/")
+        cTemp += "\"
+    EndIf
+
+    If !Empty(cUnitGrp)
+        cDescLogo := cGrpCompany + cCodEmpGrp + cUnitGrp + cFilGrp
+    Else
+        cDescLogo := cEmpAnt + cFilAnt
+    EndIf
+
+    // Lista de possíveis nomes de logotipo no diretório \system\ (StartPath)
+    aAdd(aLogos, cStart + "lgmid.png")
+    aAdd(aLogos, cStart + "LGMID.PNG")
+    aAdd(aLogos, cStart + "LGMID01.PNG")
+    aAdd(aLogos, cStart + "lgmid01.png")
+    aAdd(aLogos, cStart + "LGRL" + cEmpAnt + cFilAnt + ".BMP")
+    aAdd(aLogos, cStart + "lgrl" + cEmpAnt + cFilAnt + ".bmp")
+    aAdd(aLogos, cStart + "LGRL" + cEmpAnt + ".BMP")
+    aAdd(aLogos, cStart + "lgrl" + cEmpAnt + ".bmp")
+    aAdd(aLogos, cStart + "LGRL01.BMP")
+    aAdd(aLogos, cStart + "lgrl01.bmp")
+    aAdd(aLogos, cStart + "DANFE" + cDescLogo + ".BMP")
+    aAdd(aLogos, cStart + "DANFE" + cEmpAnt + ".BMP")
+    aAdd(aLogos, "\system\lgmid.png")
+    aAdd(aLogos, "\system\lgrl01.bmp")
+
+    For nI := 1 To Len(aLogos)
+        If File(aLogos[nI])
+            cFonte := aLogos[nI]
+            Exit
+        EndIf
+    Next nI
+
+    If Empty(cFonte)
+        Return ""
+    EndIf
+
+    // Copia a imagem do servidor (Linux) para a pasta temporária do cliente (Windows)
+    CpyS2T(cFonte, cTemp, .T.)
+
+    cFileOnly := SubStr(cFonte, RAt("\", StrTran(cFonte, "/", "\")) + 1)
+    cLogoLocal := cTemp + cFileOnly
+
+    If !File(cLogoLocal)
+        Sleep(300)
+    EndIf
+
+    If File(cLogoLocal)
+        Return cLogoLocal
+    EndIf
+Return cFonte
 
 /*/{Protheus.doc} PrtTopBlocks
 Coordena a impressão do cabeçalho e blocos superiores da OP (Blocos 1 a 5).
@@ -264,7 +343,7 @@ Coordena a impressão do cabeçalho e blocos superiores da OP (Blocos 1 a 5).
 @param oFonts, json, Dicionário de fontes TFont
 @param oBrushGray, object, Pincel TBrush cinza claro
 @param cAliasSC2, character, Alias aberto da query SC2
-@param cLogo, character, Caminho do arquivo BMP de logotipo
+@param cLogo, character, Caminho do arquivo de logotipo
 @param nPag, numeric, Número da página atual da OP
 @return numeric, Coordenada vertical (nRow) após o Bloco 5
 /*/
@@ -342,11 +421,11 @@ Static Function PrtBlk1Hdr(oPrinter, oFonts, cAliasSC2, cLogo, nPag, nRow)
     // Moldura do Cabeçalho
     oPrinter:Box(nRow, MARGIN_LEFT, nRow + nHeight, MARGIN_RIGHT, "-4")
 
-    // Canto superior esquerdo: Logotipo (se existir no RootPath)
-    If File(cLogo)
+    // Canto superior esquerdo: Logotipo (copiado para o cliente via GetLogoOP)
+    If !Empty(cLogo) .And. File(cLogo)
         oPrinter:SayBitmap(nRow + 4, MARGIN_LEFT + 6, cLogo, 85, 32)
     Else
-        oPrinter:SayAlign(nRow + 12, MARGIN_LEFT + 6, "[LOGOTIPO]", oFonts["LABEL_BOLD"], 85, 15, , PAD_CENTER, 0)
+        oPrinter:SayAlign(nRow + 12, MARGIN_LEFT + 6, "RewPlastic", oFonts["SUBTITLE"], 85, 15, , PAD_CENTER, 0)
     EndIf
 
     // Centro: Título em destaque
