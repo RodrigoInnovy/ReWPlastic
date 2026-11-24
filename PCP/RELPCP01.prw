@@ -334,6 +334,157 @@ Static Function GetLogoOP()
     EndIf
 Return cFonte
 
+/*/{Protheus.doc} GetPedCliOP
+Localiza o Cliente, Loja, Nome Reduzido, Razão Social (SA1) e o Código do Produto no Cliente (SA7->A7_CODCLI)
+a partir do Pedido de Venda informado na Ordem de Produção (SC2->C2_PEDIDO -> SC5 -> SA1 / SA7).
+Caso a OP não tenha C2_PEDIDO preenchido na linha (ex: OP intermediária ou vínculo via SC6->C6_NUMOP),
+realiza fallback automático na SC6 e busca a SA7 tanto pelo índice 1 (A7_FILIAL+A7_CLIENTE+A7_LOJA+A7_PRODUTO)
+quanto por query SQL ignorando diferenças de compartilhamento de filial na SA7.
+@type static function
+@author Arquiteto Protheus
+@since 24/11/2026
+@param cAliasSC2, character, Alias aberto da query principal SC2
+@return array, {cPedido, cItemPV, cCodCli, cLojaCli, cNomeReduz, cRazaoSoc, cCodProdCli}
+@table SC2, SC5, SC6, SA1, SA7
+/*/
+Static Function GetPedCliOP(cAliasSC2)
+    Local aArea       := GetArea()
+    Local aAreaSC5    := SC5->(GetArea())
+    Local aAreaSA1    := SA1->(GetArea())
+    Local aAreaSA7    := SA7->(GetArea())
+    Local cNumOP      := (cAliasSC2)->C2_NUM
+    Local cItemOP     := (cAliasSC2)->C2_ITEM
+    Local cProduto    := PadR(AllTrim((cAliasSC2)->C2_PRODUTO), TamSX3("B1_COD")[1])
+    Local cPedido     := AllTrim((cAliasSC2)->C2_PEDIDO)
+    Local cItemPV     := AllTrim((cAliasSC2)->C2_ITEMPV)
+    Local cCliente    := AllTrim((cAliasSC2)->C5_CLIENTE)
+    Local cLoja       := AllTrim((cAliasSC2)->C5_LOJACLI)
+    Local cNReduz     := AllTrim((cAliasSC2)->A1_NREDUZ)
+    Local cNome       := AllTrim((cAliasSC2)->A1_NOME)
+    Local cCodProdCli := AllTrim((cAliasSC2)->A7_CODCLI)
+    Local cAliasTmp   := ""
+    Local cPedSeek    := ""
+
+    // 1. Se o pedido veio vazio na SC2 (ou é OP filha/vinculada pela SC6), tenta localizar o Pedido na SC6 ou SC2 Pai
+    If Empty(cPedido)
+        cAliasTmp := GetNextAlias()
+        BeginSql Alias cAliasTmp
+            SELECT
+                SC6.C6_NUM,
+                SC6.C6_ITEM,
+                SC6.C6_CLI,
+                SC6.C6_LOJA
+            FROM %table:SC6% SC6
+            WHERE SC6.C6_FILIAL = %xFilial:SC6%
+              AND SC6.C6_NUMOP  = %Exp:cNumOP%
+              AND (SC6.C6_ITEMOP = %Exp:cItemOP% OR SC6.C6_PRODUTO = %Exp:cProduto%)
+              AND SC6.%notDel%
+        EndSql
+
+        If !(cAliasTmp)->(Eof())
+            cPedido  := AllTrim((cAliasTmp)->C6_NUM)
+            cItemPV  := AllTrim((cAliasTmp)->C6_ITEM)
+            cCliente := AllTrim((cAliasTmp)->C6_CLI)
+            cLoja    := AllTrim((cAliasTmp)->C6_LOJA)
+        EndIf
+        (cAliasTmp)->(DbCloseArea())
+    EndIf
+
+    // Se ainda não achou pedido e a sequência não é 001, verifica se a OP pai (sequência 001) tem o C2_PEDIDO
+    If Empty(cPedido)
+        cAliasTmp := GetNextAlias()
+        BeginSql Alias cAliasTmp
+            SELECT
+                SC2PAI.C2_PEDIDO,
+                SC2PAI.C2_ITEMPV
+            FROM %table:SC2% SC2PAI
+            WHERE SC2PAI.C2_FILIAL  = %xFilial:SC2%
+              AND SC2PAI.C2_NUM     = %Exp:cNumOP%
+              AND SC2PAI.C2_ITEM    = %Exp:cItemOP%
+              AND SC2PAI.C2_PEDIDO <> ' '
+              AND SC2PAI.%notDel%
+        EndSql
+
+        If !(cAliasTmp)->(Eof())
+            cPedido := AllTrim((cAliasTmp)->C2_PEDIDO)
+            If Empty(cItemPV)
+                cItemPV := AllTrim((cAliasTmp)->C2_ITEMPV)
+            EndIf
+        EndIf
+        (cAliasTmp)->(DbCloseArea())
+    EndIf
+
+    // 2. Com o número do Pedido (C2_PEDIDO), localiza o Cliente e Loja na SC5 (Cabeçalho do Pedido de Vendas)
+    If !Empty(cPedido) .And. Empty(cCliente)
+        cPedSeek := PadR(cPedido, TamSX3("C5_NUM")[1])
+        DbSelectArea("SC5")
+        SC5->(DbSetOrder(1)) // C5_FILIAL + C5_NUM
+        If SC5->(DbSeek(xFilial("SC5") + cPedSeek))
+            cCliente := AllTrim(SC5->C5_CLIENTE)
+            cLoja    := AllTrim(SC5->C5_LOJACLI)
+        Else
+            // Fallback via SQL caso o pedido esteja em outra filial da mesma empresa
+            cAliasTmp := GetNextAlias()
+            BeginSql Alias cAliasTmp
+                SELECT
+                    SC5.C5_CLIENTE,
+                    SC5.C5_LOJACLI
+                FROM %table:SC5% SC5
+                WHERE SC5.C5_NUM = %Exp:cPedSeek%
+                  AND SC5.%notDel%
+            EndSql
+            If !(cAliasTmp)->(Eof())
+                cCliente := AllTrim((cAliasTmp)->C5_CLIENTE)
+                cLoja    := AllTrim((cAliasTmp)->C5_LOJACLI)
+            EndIf
+            (cAliasTmp)->(DbCloseArea())
+        EndIf
+    EndIf
+
+    // 3. Com Cliente e Loja da SC5, garante os dados cadastrais na SA1
+    If !Empty(cCliente) .And. Empty(cNome)
+        DbSelectArea("SA1")
+        SA1->(DbSetOrder(1)) // A1_FILIAL + A1_COD + A1_LOJA
+        If SA1->(DbSeek(xFilial("SA1") + PadR(cCliente, TamSX3("A1_COD")[1]) + PadR(cLoja, TamSX3("A1_LOJA")[1])))
+            cNReduz := AllTrim(SA1->A1_NREDUZ)
+            cNome   := AllTrim(SA1->A1_NOME)
+        EndIf
+    EndIf
+
+    // 4. Com Cliente + Loja (da SC5) e Produto (C2_PRODUTO), busca o Código do Produto no Cliente na SA7 (A7_CODCLI)
+    If !Empty(cCliente) .And. Empty(cCodProdCli)
+        DbSelectArea("SA7")
+        SA7->(DbSetOrder(1)) // Índice 1: A7_FILIAL + A7_CLIENTE + A7_LOJA + A7_PRODUTO
+        If SA7->(DbSeek(xFilial("SA7") + PadR(cCliente, TamSX3("A7_CLIENTE")[1]) + PadR(cLoja, TamSX3("A7_LOJA")[1]) + cProduto))
+            cCodProdCli := AllTrim(SA7->A7_CODCLI)
+        EndIf
+
+        // Fallback via SQL na SA7: caso a amarração tenha sido cadastrada em outra loja do mesmo cliente ou filial compartilhada
+        If Empty(cCodProdCli)
+            cAliasTmp := GetNextAlias()
+            BeginSql Alias cAliasTmp
+                SELECT
+                    SA7.A7_CODCLI
+                FROM %table:SA7% SA7
+                WHERE SA7.A7_CLIENTE = %Exp:PadR(cCliente, TamSX3("A7_CLIENTE")[1])%
+                  AND SA7.A7_PRODUTO = %Exp:cProduto%
+                  AND SA7.A7_CODCLI <> ' '
+                  AND SA7.%notDel%
+                ORDER BY CASE WHEN SA7.A7_LOJA = %Exp:PadR(cLoja, TamSX3("A7_LOJA")[1])% THEN 0 ELSE 1 END
+            EndSql
+            If !(cAliasTmp)->(Eof())
+                cCodProdCli := AllTrim((cAliasTmp)->A7_CODCLI)
+            EndIf
+            (cAliasTmp)->(DbCloseArea())
+        EndIf
+    EndIf
+
+    RestArea(aAreaSA7)
+    RestArea(aAreaSA1)
+    RestArea(aAreaSC5)
+    RestArea(aArea)
+Return {cPedido, cItemPV, cCliente, cLoja, cNReduz, cNome, cCodProdCli}
+
 /*/{Protheus.doc} PrtTopBlocks
 Coordena a impressão do cabeçalho e blocos superiores da OP (Blocos 1 a 5).
 @type static function
@@ -348,7 +499,7 @@ Coordena a impressão do cabeçalho e blocos superiores da OP (Blocos 1 a 5).
 @return numeric, Coordenada vertical (nRow) após o Bloco 5
 /*/
 Static Function PrtTopBlocks(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, nPag)
-    Local nRow      := 20
+    Local nRow      := 18
     Local aDadosSG2 := GetFirstSG2(cAliasSC2)
 
     // BLOCO 1: Cabeçalho Principal
@@ -394,13 +545,14 @@ Static Function CheckPageBreak(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, n
         // Inicia nova página e incrementa contador
         nPag++
         oPrinter:StartPage()
-        nRow   := PrtBlk1Hdr(oPrinter, oFonts, cAliasSC2, cLogo, nPag, 20)
+        nRow   := PrtBlk1Hdr(oPrinter, oFonts, cAliasSC2, cLogo, nPag, 18)
         lBroke := .T.
     EndIf
 Return lBroke
 
 /*/{Protheus.doc} PrtBlk1Hdr
-Imprime o BLOCO 1: Cabeçalho Principal (Logo à esquerda, Título da OP ao centro, Página à direita).
+Imprime o BLOCO 1: Cabeçalho Principal com altura ampliada (64pt) para manter a proporção original
+do logotipo RewPlastic (aspect ratio ~ 153x160 = quase quadrado, renderizado em 56x56pt sem achatar).
 @type static function
 @author Arquiteto Protheus
 @since 23/11/2026
@@ -416,28 +568,30 @@ Static Function PrtBlk1Hdr(oPrinter, oFonts, cAliasSC2, cLogo, nPag, nRow)
     Local cNumOP  := AllTrim((cAliasSC2)->C2_NUM + (cAliasSC2)->C2_ITEM + (cAliasSC2)->C2_SEQUEN)
     Local cTitulo := "ORDEM DE PRODUÇÃO Nº: " + cNumOP
     Local cPagTxt := "Página: " + cValToChar(nPag)
-    Local nHeight := 40
+    Local nHeight := 64
 
-    // Moldura do Cabeçalho
+    // Moldura do Cabeçalho Principal (com divisória vertical para o box do logotipo)
     oPrinter:Box(nRow, MARGIN_LEFT, nRow + nHeight, MARGIN_RIGHT, "-4")
+    oPrinter:Line(nRow, MARGIN_LEFT + 76, nRow + nHeight, MARGIN_LEFT + 76)
 
-    // Canto superior esquerdo: Logotipo (copiado para o cliente via GetLogoOP)
+    // Canto superior esquerdo: Logotipo proporcional (56x56pt centralizado no box de 76x64pt)
     If !Empty(cLogo) .And. File(cLogo)
-        oPrinter:SayBitmap(nRow + 4, MARGIN_LEFT + 6, cLogo, 85, 32)
+        oPrinter:SayBitmap(nRow + 4, MARGIN_LEFT + 10, cLogo, 56, 56)
     Else
-        oPrinter:SayAlign(nRow + 12, MARGIN_LEFT + 6, "RewPlastic", oFonts["SUBTITLE"], 85, 15, , PAD_CENTER, 0)
+        oPrinter:SayAlign(nRow + 24, MARGIN_LEFT + 4, "RewPlastic", oFonts["SUBTITLE"], 68, 16, , PAD_CENTER, 0)
     EndIf
 
-    // Centro: Título em destaque
-    oPrinter:SayAlign(nRow + 12, MARGIN_LEFT + 100, cTitulo, oFonts["TITLE_MAIN"], 370, 20, , PAD_CENTER, 0)
+    // Centro: Título em destaque centralizado vertical e horizontalmente
+    oPrinter:SayAlign(nRow + 22, MARGIN_LEFT + 82, cTitulo, oFonts["TITLE_MAIN"], 385, 22, , PAD_CENTER, 0)
 
     // Canto superior direito: Número da Página
-    oPrinter:SayAlign(nRow + 14, MARGIN_RIGHT - 90, cPagTxt, oFonts["LABEL_BOLD"], 82, 15, , PAD_RIGHT, 0)
+    oPrinter:SayAlign(nRow + 24, MARGIN_RIGHT - 90, cPagTxt, oFonts["LABEL_BOLD"], 82, 16, , PAD_RIGHT, 0)
 
-Return (nRow + nHeight + 6)
+Return (nRow + nHeight + 5)
 
 /*/{Protheus.doc} PrtBlk2Cli
 Imprime o BLOCO 2: Dados do Cliente, Pedido e Produto (com Tabela Interna de cabeçalho cinza claro).
+Busca Cliente na SC5 pelo C2_PEDIDO e o Código do Produto no Cliente na SA7 (A7_CODCLI).
 @type static function
 @author Arquiteto Protheus
 @since 23/11/2026
@@ -449,14 +603,19 @@ Imprime o BLOCO 2: Dados do Cliente, Pedido e Produto (com Tabela Interna de cab
 @return numeric, Próxima linha disponível (nRow)
 /*/
 Static Function PrtBlk2Cli(oPrinter, oFonts, oBrushGray, cAliasSC2, nRow)
+    Local aPedCli   := GetPedCliOP(cAliasSC2)
+    Local cPedido   := aPedCli[1]
+    Local cItemPV   := aPedCli[2]
+    Local cCodCli   := aPedCli[3]
+    Local cLojaCli  := aPedCli[4]
+    Local cNReduz   := aPedCli[5]
+    Local cRazaoSoc := aPedCli[6]
+    Local cCodPrdCl := aPedCli[7]
     Local cCliente  := ""
     Local cEmissao  := DtoC((cAliasSC2)->C2_EMISSAO)
     Local cPrazo    := DtoC((cAliasSC2)->C2_DATPRF)
-    Local cPedido   := AllTrim((cAliasSC2)->C2_PEDIDO)
-    Local cItemPV   := AllTrim((cAliasSC2)->C2_ITEMPV)
     Local cLote     := AllTrim((cAliasSC2)->C2_XLOTE)
     Local cCodProd  := AllTrim((cAliasSC2)->C2_PRODUTO)
-    Local cCodCli   := AllTrim((cAliasSC2)->A7_CODCLI)
     Local cDescProd := AllTrim((cAliasSC2)->B1_DESC)
     Local cUnid     := AllTrim((cAliasSC2)->C2_UM)
     Local cQuant    := AllTrim(Transform((cAliasSC2)->C2_QUANT, PesqPict("SC2", "C2_QUANT")))
@@ -465,9 +624,8 @@ Static Function PrtBlk2Cli(oPrinter, oFonts, oBrushGray, cAliasSC2, nRow)
     Local nTblTop   := 0
 
     // Monta string do Cliente: Código + Loja + Nome Reduzido + Razão Social
-    If !Empty((cAliasSC2)->C5_CLIENTE)
-        cCliente := AllTrim((cAliasSC2)->C5_CLIENTE) + "/" + AllTrim((cAliasSC2)->C5_LOJACLI) + ;
-                    " - " + AllTrim((cAliasSC2)->A1_NREDUZ) + " (" + AllTrim((cAliasSC2)->A1_NOME) + ")"
+    If !Empty(cCodCli)
+        cCliente := cCodCli + "/" + cLojaCli + " - " + cNReduz + " (" + cRazaoSoc + ")"
     Else
         cCliente := "PRODUÇÃO PARA ESTOQUE / SEM PEDIDO VINCULADO"
     EndIf
@@ -480,8 +638,8 @@ Static Function PrtBlk2Cli(oPrinter, oFonts, oBrushGray, cAliasSC2, nRow)
     oPrinter:Box(nBoxTop, MARGIN_LEFT, nBoxTop + nBoxH, MARGIN_RIGHT, "-4")
 
     // Linha 1: Cliente e Data de Emissão
-    oPrinter:Say(nBoxTop + 12, MARGIN_LEFT + 6,   "Cliente:",         oFonts["LABEL_BOLD"])
-    oPrinter:Say(nBoxTop + 12, MARGIN_LEFT + 45,  cCliente,           oFonts["DATA_REG"])
+    oPrinter:Say(nBoxTop + 12, MARGIN_LEFT + 6,    "Cliente:",         oFonts["LABEL_BOLD"])
+    oPrinter:Say(nBoxTop + 12, MARGIN_LEFT + 45,   cCliente,           oFonts["DATA_REG"])
     oPrinter:Say(nBoxTop + 12, MARGIN_RIGHT - 135, "Data de Emissão:", oFonts["LABEL_BOLD"])
     oPrinter:Say(nBoxTop + 12, MARGIN_RIGHT - 60,  cEmissao,           oFonts["DATA_REG"])
 
@@ -502,33 +660,34 @@ Static Function PrtBlk2Cli(oPrinter, oFonts, oBrushGray, cAliasSC2, nRow)
     oPrinter:Line(nTblTop + 16, MARGIN_LEFT, nTblTop + 16, MARGIN_RIGHT)
 
     // Divisórias verticais das colunas da tabela de produto
-    // Colunas: Cód.ReW (20..95) | Código Cliente (95..180) | Descrição (180..410) | Qtde (410..480) | Un. (480..515) | Prazo (515..575)
+    // Colunas: Cód.ReW (20..95) | Código Cliente (95..185) | Descrição (185..410) | Qtde (410..480) | Un. (480..515) | Prazo (515..575)
     oPrinter:Line(nTblTop, 95,  nBoxTop + nBoxH, 95)
-    oPrinter:Line(nTblTop, 180, nBoxTop + nBoxH, 180)
+    oPrinter:Line(nTblTop, 185, nBoxTop + nBoxH, 185)
     oPrinter:Line(nTblTop, 410, nBoxTop + nBoxH, 410)
     oPrinter:Line(nTblTop, 480, nBoxTop + nBoxH, 480)
     oPrinter:Line(nTblTop, 515, nBoxTop + nBoxH, 515)
 
     // Títulos das colunas
     oPrinter:SayAlign(nTblTop + 3, MARGIN_LEFT + 2, "Cód.ReW",               oFonts["LABEL_BOLD"], 70,  12, , PAD_LEFT,   0)
-    oPrinter:SayAlign(nTblTop + 3, 98,              "Código Cliente",        oFonts["LABEL_BOLD"], 80,  12, , PAD_LEFT,   0)
-    oPrinter:SayAlign(nTblTop + 3, 183,             "Descrição do Produto",  oFonts["LABEL_BOLD"], 224, 12, , PAD_LEFT,   0)
+    oPrinter:SayAlign(nTblTop + 3, 98,              "Código Cliente",        oFonts["LABEL_BOLD"], 84,  12, , PAD_LEFT,   0)
+    oPrinter:SayAlign(nTblTop + 3, 188,             "Descrição do Produto",  oFonts["LABEL_BOLD"], 220, 12, , PAD_LEFT,   0)
     oPrinter:SayAlign(nTblTop + 3, 412,             "Qtde.",                 oFonts["LABEL_BOLD"], 65,  12, , PAD_RIGHT,  0)
     oPrinter:SayAlign(nTblTop + 3, 482,             "Un.",                   oFonts["LABEL_BOLD"], 30,  12, , PAD_CENTER, 0)
     oPrinter:SayAlign(nTblTop + 3, 517,             "Prazo",                 oFonts["LABEL_BOLD"], 55,  12, , PAD_CENTER, 0)
 
-    // Dados da linha do produto
+    // Dados da linha do produto (cCodPrdCl = SA7->A7_CODCLI)
     oPrinter:SayAlign(nTblTop + 21, MARGIN_LEFT + 2, cCodProd,  oFonts["DATA_REG"], 70,  14, , PAD_LEFT,   0)
-    oPrinter:SayAlign(nTblTop + 21, 98,              cCodCli,   oFonts["DATA_REG"], 80,  14, , PAD_LEFT,   0)
-    oPrinter:SayAlign(nTblTop + 21, 183,             cDescProd, oFonts["DATA_REG"], 224, 14, , PAD_LEFT,   0)
+    oPrinter:SayAlign(nTblTop + 21, 98,              cCodPrdCl, oFonts["DATA_REG"], 84,  14, , PAD_LEFT,   0)
+    oPrinter:SayAlign(nTblTop + 21, 188,             cDescProd, oFonts["DATA_REG"], 220, 14, , PAD_LEFT,   0)
     oPrinter:SayAlign(nTblTop + 21, 412,             cQuant,    oFonts["DATA_REG"], 65,  14, , PAD_RIGHT,  0)
     oPrinter:SayAlign(nTblTop + 21, 482,             cUnid,     oFonts["DATA_REG"], 30,  14, , PAD_CENTER, 0)
     oPrinter:SayAlign(nTblTop + 21, 517,             cPrazo,    oFonts["DATA_REG"], 55,  14, , PAD_CENTER, 0)
 
-Return (nBoxTop + nBoxH + 6)
+Return (nBoxTop + nBoxH + 5)
 
 /*/{Protheus.doc} PrtBlk3Inj
 Imprime o BLOCO 3: Parâmetros Técnicos de Injeção / Molde utilizando B1_XCAVID e B1_XCICLO.
+(Campo Quantidade Residual removido conforme solicitação).
 @type static function
 @author Arquiteto Protheus
 @since 23/11/2026
@@ -551,13 +710,11 @@ Static Function PrtBlk3Inj(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
     Local nPecasHora  := 0
     Local nTempoTotal := 0
     Local nVolFechado := 0
-    Local nQtdResid   := 0
     Local cCavTxt     := "____"
     Local cCicloTxt   := "____ s"
     Local cPecasHTxt  := "____"
     Local cTempoTxt   := "____ h"
     Local cVolTxt     := "0"
-    Local cResidTxt   := "0"
 
     If nCavidades > 0
         cCavTxt := AllTrim(Transform(nCavidades, "@E 9,999"))
@@ -577,13 +734,11 @@ Static Function PrtBlk3Inj(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
         EndIf
     EndIf
 
-    // Cálculo de Volumes Fechados e Quantidade Residual com base em B1_QE (Quantidade por Embalagem)
+    // Cálculo de Volumes Fechados com base em B1_QE (Quantidade por Embalagem)
     If nQtdEmb > 0
         nVolFechado := Int(nQuantOP / nQtdEmb)
-        nQtdResid   := nQuantOP - (nVolFechado * nQtdEmb)
     EndIf
-    cVolTxt   := cValToChar(nVolFechado)
-    cResidTxt := AllTrim(Transform(nQtdResid, PesqPict("SC2", "C2_QUANT")))
+    cVolTxt := cValToChar(nVolFechado)
 
     // Caixa externa e linhas divisórias horizontais do Bloco 3
     oPrinter:Box(nBoxTop, MARGIN_LEFT, nBoxTop + nBoxH, MARGIN_RIGHT, "-4")
@@ -600,21 +755,19 @@ Static Function PrtBlk3Inj(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
     oPrinter:Say(nBoxTop + 12, MARGIN_LEFT + 430, "Tempo Total:",       oFonts["LABEL_BOLD"])
     oPrinter:Say(nBoxTop + 12, MARGIN_LEFT + 490, cTempoTxt,            oFonts["DATA_REG"])
 
-    // Linha 2: Quantidade por Volume | Volumes Fechados | Quantidade Residual
+    // Linha 2: Quantidade por Volume | Volumes Fechados (Quantidade Residual removida)
     oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 6,   "Quantidade por Volume:", oFonts["LABEL_BOLD"])
     oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 115, AllTrim(Transform(nQtdEmb, PesqPict("SB1", "B1_QE"))), oFonts["DATA_REG"])
-    oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 200, "Volumes Fechados:",      oFonts["LABEL_BOLD"])
-    oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 290, cVolTxt,                  oFonts["DATA_REG"])
-    oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 370, "Quantidade Residual:",   oFonts["LABEL_BOLD"])
-    oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 470, cResidTxt,                oFonts["DATA_REG"])
+    oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 230, "Volumes Fechados:",      oFonts["LABEL_BOLD"])
+    oPrinter:Say(nBoxTop + 30, MARGIN_LEFT + 320, cVolTxt,                  oFonts["DATA_REG"])
 
     // Linha 3: Peso Líquido | Peso Bruto
     oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 6,   "Peso Líquido:", oFonts["LABEL_BOLD"])
     oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 72,  AllTrim(Transform(nPesoLiq, PesqPict("SB1", "B1_PESO"))),   oFonts["DATA_REG"])
-    oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 200, "Peso Bruto:",   oFonts["LABEL_BOLD"])
-    oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 260, AllTrim(Transform(nPesoBru, PesqPict("SB1", "B1_PESBRU"))), oFonts["DATA_REG"])
+    oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 230, "Peso Bruto:",   oFonts["LABEL_BOLD"])
+    oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 290, AllTrim(Transform(nPesoBru, PesqPict("SB1", "B1_PESBRU"))), oFonts["DATA_REG"])
 
-Return (nBoxTop + nBoxH + 6)
+Return (nBoxTop + nBoxH + 5)
 
 /*/{Protheus.doc} PrtBlk4Mol
 Imprime o BLOCO 4: Produção e Dimensões do Molde utilizando B1_XMOLDE, B1_XALTMOL, B1_XLARMOL, B1_XCOMMOL e B1_XCICLO.
@@ -691,7 +844,7 @@ Static Function PrtBlk4Mol(oPrinter, oFonts, cAliasSC2, aDadosSG2, nRow)
     oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 350, "Ciclo estimado:",   oFonts["LABEL_BOLD"])
     oPrinter:Say(nBoxTop + 48, MARGIN_LEFT + 425, cCicloEst,           oFonts["DATA_REG"])
 
-Return (nBoxTop + nBoxH + 6)
+Return (nBoxTop + nBoxH + 5)
 
 /*/{Protheus.doc} PrtBlk5Set
 Imprime o BLOCO 5: Configuração e Setup.
@@ -721,7 +874,7 @@ Static Function PrtBlk5Set(oPrinter, oFonts, nRow)
     // Linha 2: Responsável
     oPrinter:Say(nBoxTop + 47, MARGIN_LEFT + 6, "Responsável: _________________________________________________________________________", oFonts["LABEL_BOLD"])
 
-Return (nBoxTop + nBoxH + 8)
+Return (nBoxTop + nBoxH + 6)
 
 /*/{Protheus.doc} PrtBlk6SD4
 Imprime o BLOCO 6: Matéria-Prima / Insumo a Utilizar (Grid com cabeçalho cinza buscando da SD4 x SB1).
@@ -830,7 +983,7 @@ Static Function PrtBlk6SD4(oPrinter, oFonts, oBrushGray, cAliasSC2, cLogo, nPag,
         Next nIdx
     EndIf
 
-Return (nRow + 8)
+Return (nRow + 6)
 
 /*/{Protheus.doc} PrtHdrSD4
 Imprime o título e o cabeçalho de colunas com fundo cinza do Bloco 6 (Matéria-Prima / Insumo).
